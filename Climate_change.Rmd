@@ -1,0 +1,184 @@
+---
+title: "Visualising Climate Change"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd('/Users/thomasparry/Documents/Projects/Gapminder/')
+```
+
+```{r dependencies, include=FALSE}
+## packages used in this vignette
+library(dplyr)
+library(ggpubr)
+library(readxl)
+library(data.table)
+library(purrr)
+library(tidyverse)
+library(ggplot2)
+library(tmap)
+library(rgeos)
+library(sf)
+library(colorspace)
+```
+
+## R Markdown
+
+The purpose of this exercise is to find a new, compelling way to display existing data.  I wanted to challenge myself to see if I could produce a new take on climate change data, namely world temperature data.   
+
+The most manual part of this exercise was downloading the datasets from the World Bank Group from the following portal: [https://climateknowledgeportal.worldbank.org/download-data] 
+
+I downloaded the datasets for 188 countries spanning the years 1961-2020. 
+
+Note: Some datasets from climateknowledgeportal are formatted incorrectly, examples include North & South Korea. 
+
+
+```{r temp_files_1991, echo = FALSE}
+setwd('/Users/thomasparry/Documents/Projects/Gapminder/WBG_tempdata/1991_2020/')
+temp_files_1991 <- list.files('/Users/thomasparry/Documents/Projects/Gapminder/WBG_tempdata/1991_2020/', pattern = '*.csv')
+fread_tbl_1991 <- temp_files_1991 %>% map_df(~fread(.), select(c=c(1:5)))
+fread_tbl_1991 <- fread_tbl_1991[,c(1:5)]
+colnames(fread_tbl_1991)[1] <- 'Temperature'
+mean_temps_91 <- suppressMessages(fread_tbl_1991 %>% group_by(Year,Country,ISO3) %>% summarise(mean_temp = mean(Temperature)) )
+
+
+setwd('/Users/thomasparry/Documents/Projects/Gapminder/WBG_tempdata/1961_1990/')
+temp_files_1961 <- list.files('/Users/thomasparry/Documents/Projects/Gapminder/WBG_tempdata/1961_1990/', pattern = '*.csv')
+fread_tbl_1961 <- temp_files_1961 %>% map_df(~fread(.), select(c=c(1:5)))
+fread_tbl_1961 <- fread_tbl_1961[,c(1:5)]
+colnames(fread_tbl_1961)[1] <- 'Temperature'
+mean_temps_61 <- suppressMessages(fread_tbl_1961 %>% group_by(Year,Country,ISO3) %>% summarise(mean_temp = mean(Temperature))) 
+
+mean_temps <- rbind(mean_temps_61, mean_temps_91)
+mean_temps <- na.omit(mean_temps)
+```
+
+```{r echo = FALSE}
+setwd('/Users/thomasparry/Documents/Projects/Gapminder/')
+```
+
+
+Here is the summary of the downloaded data.
+```{r echo = TRUE}
+summary(mean_temps)
+
+## ISO3 codes are unique 3 letter codes corresponding to a country 
+length(unique(mean_temps$ISO3))
+## mean annual temperature of 188 countries from 1961-2020 
+```
+
+
+```{r WAMT, echo = TRUE}
+## produce World Average Mean Temperature (WAMT) from the prior dataframe
+WAMT <- mean_temps %>% group_by(Year) %>% summarise(World_annual_mean_temp = mean(mean_temp))
+## initialize an empty column 
+WAMT$label <- rep("",nrow(WAMT))
+
+## get every 5-year interval throughout the years in the dataset 
+yrs5 <- c()
+for (yr in WAMT$Year) { 
+  if (yr%%5 == 0) {
+    yrs5 <- c(yrs5,yr)
+  }
+}
+
+# label every 5-year interval with the year. 
+WAMT$label[seq(5,60,by=5)] <- yrs5
+WAMT$label <- as.factor(WAMT$label)
+
+ggscatter(WAMT, y = 'World_annual_mean_temp', x = 'Year', label = 'label', color = 'label', palette = c('black',c(rep('red',12))), show.legend = F) +rremove('legend') + ylab('World annual mean temperature (Celsius)')
+```
+
+
+An issue with world average temperature is that it the scale isn't very granular for individual countries or even continents. The Y-axis of the above figure represents a roughly 1 degree Celsius change overall.   
+
+Here is an animated map of the average annual mean temperatures decade by decade from 1960-2020 made from this dataset. 
+![Test](/Users/thomasparry/Documents/Projects/Gapminder/World_decade_ani.gif)
+Here, when looking at country-scale resolution we see the scale of temperature ranges from < -10 to > 20 degrees Celsius.  
+
+This is just my opinion, but this .gif struggles to convey the same trend presented in the earlier scatter graph.
+
+Can you really tell from the .gif that the global average temperature is rising? Is it as compelling or clear as the earlier figure? 
+
+### A novel way to visualise climate change ### 
+
+The strategy will be to show cumulative change in temperature from the earliest years of the dataset to now.  Conveniently the time span of 1961 to 2020 can be split into equal 5-year bins 'demi-decades'.   
+
+```{r decades, echo = TRUE}
+## annotate with a demi_decades column (equal bins)
+
+mean_temps$demi_decade <- c(rep('1961-1965',940),
+                            rep('1966-1970',940),
+                            rep('1971-1975',940),
+                            rep('1976-1980',940),
+                            rep('1981-1985',940),
+                            rep('1986-1990',940),
+                            rep('1991-1995',940),
+                            rep('1996-2000',940),
+                            rep('2001-2005',940),
+                            rep('2006-2010',940),
+                            rep('2011-2015',940),
+                            rep('2016-2020',940))
+```
+
+
+Below is code that   1) Creates a new dataframe using dplyr to work out the average temperature for each country for each demi-decade bin. Called 'decades'.   2) Calculates a new variable that is the demi-decade on demi-decade change in average temperature for each country.   3) Calculates a final new variable that is the cumulative sum of the demi-decade on demi-decade change in average temperature for each country. 
+```{r, echo = T}
+## new dataframe 
+decades <- suppressMessages(mean_temps %>% select(Country, ISO3, mean_temp, demi_decade) %>%
+  group_by(Country,ISO3, demi_decade) %>% summarise(demi_decade_mean = mean(mean_temp)))
+
+## work out the [demi] decade-on-decade change in temperature
+decades <- suppressMessages(decades %>% group_by(Country) %>% mutate(delta = demi_decade_mean - lag(demi_decade_mean,1)) %>% mutate(delta = ifelse(is.na(delta), 0, delta)))
+
+## this produces the cumulative sum of the decade-on-decade change in temperature (calculated above) for each country.
+decades$delta_temperature <- ave(decades$delta, decades$Country, FUN=cumsum)
+head(decades)
+```
+### Self-check ###
+We should do a quick sense-check to make sure these transformations produced the expected values. 
+
+```{r, echo = TRUE}
+# Let's look at Jamaica 
+JAM <- decades[which(decades$ISO3 == 'JAM'),]
+JAM
+```
+Interpreting these values is as follows:   
+delta: The demi-decade on demi-decade difference (change) in average temperature. We observe from 1961-1965 to 1966-1970 it got 0.4 degrees Celsius cooler (change of -0.4 degrees). The next demi-decade the mean temperature increased by 0.0533 degrees Celsius. The following demi-decade the mean temperature increased again by 0.268 degrees Celsius.   
+
+delta_temperature: The cumulative sum of these delta values (changes). Between 1961-1965 and 1966-1970 the mean temperature dropped by 0.4 degrees Celsius (-0.400). The next demi-decade the increase of 0.0533 is added to the -0.400 earlier value to give -0.347. It is not until the 1981-1985 interval for Jamaica the mean temperature remained elevated from the 1961-1965 interval (by 0.005 degrees Celsius).   Skipping to the final demi-decade interval 2016-2020 the mean temperature for Jamaica was 25.29833 degrees Celsius. A net change of 0.82333 degrees Celsius from the earliest record in 1961-1965 of 24.47500 degrees Celsius. 
+
+### Animating world map using transformed data ###
+Here I show how I create the animated tmap using the transformed data. 
+```{r World, echo = TRUE}
+## use the World dataset provided in the tmap package 
+data('World')
+## remove unused data 
+World <- World[,-c(3,5:15)]
+colnames(decades)[2] <- 'iso_a3'
+World <- inner_join(World, decades, 'iso_a3')
+
+## variable to plot
+colnames(World)[8] <- 'delta_temperature(Celsius)'
+```
+
+```{r,animation.hook='gifski', fig.width=4, echo = TRUE}
+# Not running this, but this is the code to produce the gif. 
+
+#World_ani <-  tm_shape(World) + tm_fill(col = "delta_temperature(Celsius)", palette = viridis::inferno(n=6), style = 'cont', n = 6) +
+#tm_facets(along = "demi_decade", free.coords = FALSE) + tm_borders(lwd = 0.75, col = "black")
+
+#tmap_animation(World_ani, delay = 175, filename = 'World_temp_change_v2.gif')
+```
+
+![Test](/Users/thomasparry/Documents/Projects/Gapminder/World_temp_change_v2.gif)
+The delta_temperature is the cumulative change in temperature from the earliest demi-decade bin (1961-1965) to the current demi-decade.   
+Again in my opinion, this is a more compelling way to illustrate the change in temperature over the 60-year span of data.
+
+### Conclusion ###
+Disclaimer: This document was not created with the intent of trying to convince any potential reader of man-made climate change/global warming. I urge anyone interested in these topics to defer to experts in these subjects.    
+
+This work was simply an demonstrative exercise of how publicly available data can be collected and transformed to produce new visualisations. In this instance. Average temperature values for 188 difference countries spanning 60 years were presented as cumulative change in average temperature. This transformation of average temperature provides a way of observing changes in countries temperatures globally on a equal scale despite the range of temperatures spanning over 30 degrees across countries and continents (see the first .gif, where average temperatures span -10 to +20 degrees Celsius).    
